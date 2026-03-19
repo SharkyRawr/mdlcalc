@@ -3,19 +3,15 @@ class Mdlcalc < Formula
 
   desc "Calculate approximate memory requirements for LLM inference"
   homepage "https://github.com/SharkyRawr/mdlcalc"
-  url "https://github.com/SharkyRawr/mdlcalc/archive/refs/tags/main.tar.gz"
-  sha256 "ff1dc5457f30ff5a1f43cdbc99cacd69d5d4e9d6bf66c6a2a7999784704a279d"
+  url "https://github.com/SharkyRawr/mdlcalc/releases/download/v0.1.1/mdlcalc-0.1.0-py3-none-any.whl"
+  sha256 "91e822fbd3291cd60fdd5c12376022e6eb6e3b2d05e6d2d8a98f24ccd778a233"
   license "CC-BY-NC-SA-4.0"
 
   depends_on "python@3.12"
 
-  resource "click" do
-    url "https://github.com/SharkyRawr/mdlcalc/archive/refs/tags/main.tar.gz"
-    sha256 "ff1dc5457f30ff5a1f43cdbc99cacd69d5d4e9d6bf66c6a2a7999784704a279d"
-  end
-
   def install
-    virtualenv_install_with_resources
+    venv = virtualenv_create(libexec, "python3.12")
+    venv.pip_install_and_link buildpath
   end
 
   test do

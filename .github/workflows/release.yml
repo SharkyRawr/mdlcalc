@@ -43,10 +43,12 @@ jobs:
         run: |
           TAG="${{ github.ref_name }}"
           REPO="${{ github.repository }}"
-          URL="https://github.com/${REPO}/archive/refs/tags/${TAG}.tar.gz"
-          SHA=$(curl -sL "$URL" | shasum -a 256 | cut -d' ' -f1)
+          VERSION="${TAG#v}"
+          WHEEL="mdlcalc-${VERSION}-py3-none-any.whl"
+          WHEEL_URL="https://github.com/${REPO}/releases/download/${TAG}/${WHEEL}"
+          SHA=$(curl -sL "$WHEEL_URL" | shasum -a 256 | cut -d' ' -f1)
 
-          sed -i "s|url \".*\"|url \"${URL}\"|" Formula/mdlcalc.rb
+          sed -i "s|url \".*\.whl\"|url \"${WHEEL_URL}\"|" Formula/mdlcalc.rb
           sed -i "s|sha256 \".*\"|sha256 \"${SHA}\"|" Formula/mdlcalc.rb
           sed -i "s|homepage \".*\"|homepage \"https://github.com/${REPO}\"|" Formula/mdlcalc.rb
 
