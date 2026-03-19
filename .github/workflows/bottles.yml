@@ -11,15 +11,17 @@ permissions:
 jobs:
   build:
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
-    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, macos-26]
+    runs-on: ${{ matrix.runner }}
     env:
       HOMEBREW_NO_AUTO_UPDATE: 1
       HOMEBREW_NO_INSTALL_CLEANUP: 1
       REPO: ${{ github.repository }}
       DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
       RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
-    outputs:
-      tag: ${{ steps.meta.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -39,24 +41,18 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.meta.outputs.tag }}
         run: |
-          SDIST="$(gh release view "$TAG" --repo "$REPO" --json assets --jq '.assets[].name' | grep '\.tar\.gz$' | grep -v '\.bottle\.' | head -n 1)"
+          VERSION="${TAG#v}"
+          SDIST="mdlcalc-${VERSION}.tar.gz"
+          gh release view "$TAG" --repo "$REPO" --json assets --jq '.assets[].name' | grep -Fx "$SDIST"
           test -n "$SDIST"
           SDIST_URL="https://github.com/${REPO}/releases/download/${TAG}/${SDIST}"
           curl -fsSL "$SDIST_URL" -o "$RUNNER_TEMP/$SDIST"
           SDIST_SHA="$(shasum -a 256 "$RUNNER_TEMP/$SDIST" | awk '{print $1}')"
-          SDIST_URL="$SDIST_URL" SDIST_SHA="$SDIST_SHA" python - <<'PY'
-          from pathlib import Path
-          import os
-          import re
-
-          path = Path("Formula/mdlcalc.rb")
-          text = path.read_text()
-          text = re.sub(r'  homepage ".*"\n', f'  homepage "https://github.com/{os.environ["REPO"]}"\n', text, count=1)
-          text = re.sub(r'  url ".*"\n', f'  url "{os.environ["SDIST_URL"]}"\n', text, count=1)
-          text = re.sub(r'  sha256 ".*"\n', f'  sha256 "{os.environ["SDIST_SHA"]}"\n', text, count=1)
-          text = re.sub(r'\n  bottle do\n(?:    .*\n)+?  end\n', '\n', text, count=1)
-          path.write_text(text)
-          PY
+          python scripts/update_formula.py \
+            --formula Formula/mdlcalc.rb \
+            --repo "$REPO" \
+            --sdist-url "$SDIST_URL" \
+            --sdist-sha256 "$SDIST_SHA"
 
       - name: Build bottle
         env:
@@ -72,10 +68,26 @@ jobs:
           brew bottle --json --root-url="https://github.com/${REPO}/releases/download/${TAG}" mdlcalc
           mkdir -p bottle-artifacts
           mv ./*.bottle.* bottle-artifacts/
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          for json_path in Path("bottle-artifacts").glob("*.json"):
+              data = json.loads(json_path.read_text())
+              bottle = next(iter(data.values()))
+              for payload in bottle["bottle"]["tags"].values():
+                  local_name = payload.get("local_filename")
+                  filename = payload.get("filename")
+                  if local_name and filename and local_name != filename:
+                      source = Path("bottle-artifacts") / local_name
+                      target = Path("bottle-artifacts") / filename
+                      if source.exists():
+                          source.rename(target)
+          PY
 
       - uses: actions/upload-artifact@v4
         with:
-          name: bottles-macos-15
+          name: bottles-${{ matrix.runner }}
           path: bottle-artifacts/*
 
   publish:
@@ -85,20 +97,34 @@ jobs:
     env:
       REPO: ${{ github.repository }}
       DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-      TAG: ${{ needs.build.outputs.tag }}
+      RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ env.DEFAULT_BRANCH }}
+          fetch-depth: 0
 
       - uses: actions/download-artifact@v4
         with:
           path: bottle-artifacts
 
+      - name: Resolve release tag
+        run: |
+          git fetch --force --tags origin
+          TAG="$(git tag --points-at "$RELEASE_SHA" | grep '^v' | head -n 1)"
+          test -n "$TAG"
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+
       - name: Upload bottles to release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          gh release view "$TAG" --repo "$REPO" --json assets --jq '.assets[].name' \
+            | grep '^mdlcalc-.*\.bottle\.' \
+            | while IFS= read -r asset; do
+                gh release delete-asset "$TAG" "$asset" --repo "$REPO" -y
+              done
+
           find bottle-artifacts -type f -name '*.tar.gz' -print0 | while IFS= read -r -d '' file; do
             gh release upload "$TAG" "$file" --repo "$REPO" --clobber
           done
@@ -107,44 +133,20 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          SDIST="$(gh release view "$TAG" --repo "$REPO" --json assets --jq '.assets[].name' | grep '\.tar\.gz$' | grep -v '\.bottle\.' | head -n 1)"
+          VERSION="${TAG#v}"
+          SDIST="mdlcalc-${VERSION}.tar.gz"
+          gh release view "$TAG" --repo "$REPO" --json assets --jq '.assets[].name' | grep -Fx "$SDIST"
           test -n "$SDIST"
           SDIST_URL="https://github.com/${REPO}/releases/download/${TAG}/${SDIST}"
           curl -fsSL "$SDIST_URL" -o "$RUNNER_TEMP/$SDIST"
           SDIST_SHA="$(shasum -a 256 "$RUNNER_TEMP/$SDIST" | awk '{print $1}')"
-          SDIST_URL="$SDIST_URL" SDIST_SHA="$SDIST_SHA" python - <<'PY'
-          from pathlib import Path
-          import json
-          import os
-          import re
-
-          formula_path = Path("Formula/mdlcalc.rb")
-          text = formula_path.read_text()
-          text = re.sub(r'  homepage ".*"\n', f'  homepage "https://github.com/{os.environ["REPO"]}"\n', text, count=1)
-          text = re.sub(r'  url ".*"\n', f'  url "{os.environ["SDIST_URL"]}"\n', text, count=1)
-          text = re.sub(r'  sha256 ".*"\n', f'  sha256 "{os.environ["SDIST_SHA"]}"\n', text, count=1)
-          text = re.sub(r'\n  bottle do\n(?:    .*\n)+?  end\n', '\n', text, count=1)
-
-          entries = []
-          for json_path in sorted(Path("bottle-artifacts").rglob("*.json")):
-            data = json.loads(json_path.read_text())
-            bottle = next(iter(data.values()))
-            for tag_name, payload in sorted(bottle["bottle"]["tags"].items()):
-              cellar = payload["cellar"]
-              cellar_value = ":any_skip_relocation" if cellar == "any_skip_relocation" else f'"{cellar}"'
-              entries.append(f'    sha256 cellar: {cellar_value}, {tag_name}: "{payload["sha256"]}"')
-
-          if not entries:
-            raise SystemExit("No bottle JSON files found")
-
-          bottle_block = "  bottle do\n"
-          bottle_block += f'    root_url "https://github.com/{os.environ["REPO"]}/releases/download/{os.environ["TAG"]}"\n'
-          bottle_block += "\n".join(entries)
-          bottle_block += "\n  end\n"
-
-          text = text.replace('  depends_on "python@3.12"\n', f'  depends_on "python@3.12"\n\n{bottle_block}\n', 1)
-          formula_path.write_text(text)
-          PY
+          python scripts/update_formula.py \
+            --formula Formula/mdlcalc.rb \
+            --repo "$REPO" \
+            --sdist-url "$SDIST_URL" \
+            --sdist-sha256 "$SDIST_SHA" \
+            --tag "$TAG" \
+            --bottle-json-dir bottle-artifacts
 
       - name: Commit updated formula
         run: |

@@ -1,5 +1,9 @@
+import tomllib
+from pathlib import Path
+
 import pytest
 
+from mdlcalc import __version__
 from mdlcalc.calc import (
     QUANT_BYTES,
     model_memory_gb,
@@ -103,3 +107,8 @@ class TestModelMemory:
             bare, overhead = model_memory_gb(1.0, q)
             assert bare == pytest.approx(QUANT_BYTES[q])
             assert overhead == pytest.approx(bare * 1.2)
+
+
+def test_package_version_matches_pyproject():
+    pyproject = tomllib.loads(Path("pyproject.toml").read_text())
+    assert __version__ == pyproject["project"]["version"]

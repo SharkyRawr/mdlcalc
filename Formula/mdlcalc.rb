@@ -3,8 +3,8 @@ class Mdlcalc < Formula
 
   desc "Calculate approximate memory requirements for LLM inference"
   homepage "https://github.com/SharkyRawr/mdlcalc"
-  url "https://github.com/SharkyRawr/mdlcalc/releases/download/v0.1.1/mdlcalc-0.1.0.tar.gz"
-  sha256 "9504f58407b8083107d9dbfb7a339549ce1adb30ec3d5e034b3ecd84012d0654"
+  url "https://github.com/SharkyRawr/mdlcalc/releases/download/v0.1.1/mdlcalc-0.1.1.tar.gz"
+  sha256 "ab79c200d1eafc837b7f6da1d2eebda62b4b39ac3c7ec972ba7ba736958f29ce"
   license "CC-BY-NC-SA-4.0"
 
   depends_on "python@3.12"
