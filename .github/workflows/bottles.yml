@@ -1,31 +1,45 @@
 name: Bottles
 
 on:
-  release:
-    types: [published]
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
 
 permissions:
   contents: write
 
 jobs:
   build:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: macos-15
     env:
       HOMEBREW_NO_AUTO_UPDATE: 1
       HOMEBREW_NO_INSTALL_CLEANUP: 1
       REPO: ${{ github.repository }}
-      TAG: ${{ github.event.release.tag_name }}
       DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ env.DEFAULT_BRANCH }}
+          fetch-depth: 0
+
+      - name: Resolve release tag
+        id: meta
+        run: |
+          git fetch --force --tags origin
+          TAG="$(git tag --points-at "$RELEASE_SHA" | grep '^v' | head -n 1)"
+          test -n "$TAG"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
       - name: Point formula at release source tarball
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.meta.outputs.tag }}
         run: |
-          SDIST="$(gh release view "$TAG" --repo "$REPO" --json assets --jq '.assets[] | select(.name | endswith(".tar.gz") and (.name | contains(".bottle." ) | not)) | .name' | head -n 1)"
+          SDIST="$(gh release view "$TAG" --repo "$REPO" --json assets --jq '.assets[].name' | grep '\.tar\.gz$' | grep -v '\.bottle\.' | head -n 1)"
           test -n "$SDIST"
           SDIST_URL="https://github.com/${REPO}/releases/download/${TAG}/${SDIST}"
           curl -fsSL "$SDIST_URL" -o "$RUNNER_TEMP/$SDIST"
@@ -45,8 +59,16 @@ jobs:
           PY
 
       - name: Build bottle
+        env:
+          TAG: ${{ steps.meta.outputs.tag }}
         run: |
-          brew install --build-bottle ./Formula/mdlcalc.rb
+          USER_NAME="$(printf '%s' "${REPO%%/*}" | tr '[:upper:]' '[:lower:]')"
+          TAP_NAME="$(printf '%s' "${REPO##*/}" | tr '[:upper:]' '[:lower:]')"
+          TAP_DIR="$(brew --repository)/Library/Taps/${USER_NAME}/homebrew-${TAP_NAME}"
+          mkdir -p "$(dirname "$TAP_DIR")"
+          rm -rf "$TAP_DIR"
+          cp -R "$PWD" "$TAP_DIR"
+          brew install --build-bottle "${USER_NAME}/${TAP_NAME}/mdlcalc"
           brew bottle --json --root-url="https://github.com/${REPO}/releases/download/${TAG}" mdlcalc
           mkdir -p bottle-artifacts
           mv ./*.bottle.* bottle-artifacts/
@@ -57,12 +79,13 @@ jobs:
           path: bottle-artifacts/*
 
   publish:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     needs: build
     runs-on: ubuntu-latest
     env:
       REPO: ${{ github.repository }}
-      TAG: ${{ github.event.release.tag_name }}
       DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      TAG: ${{ needs.build.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -84,7 +107,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          SDIST="$(gh release view "$TAG" --repo "$REPO" --json assets --jq '.assets[] | select(.name | endswith(".tar.gz") and (.name | contains(".bottle.") | not)) | .name' | head -n 1)"
+          SDIST="$(gh release view "$TAG" --repo "$REPO" --json assets --jq '.assets[].name' | grep '\.tar\.gz$' | grep -v '\.bottle\.' | head -n 1)"
           test -n "$SDIST"
           SDIST_URL="https://github.com/${REPO}/releases/download/${TAG}/${SDIST}"
           curl -fsSL "$SDIST_URL" -o "$RUNNER_TEMP/$SDIST"
@@ -106,8 +129,7 @@ jobs:
           for json_path in sorted(Path("bottle-artifacts").rglob("*.json")):
             data = json.loads(json_path.read_text())
             bottle = next(iter(data.values()))
-            files = bottle["bottle"]["tags"]
-            for tag_name, payload in sorted(files.items()):
+            for tag_name, payload in sorted(bottle["bottle"]["tags"].items()):
               cellar = payload["cellar"]
               cellar_value = ":any_skip_relocation" if cellar == "any_skip_relocation" else f'"{cellar}"'
               entries.append(f'    sha256 cellar: {cellar_value}, {tag_name}: "{payload["sha256"]}"')
