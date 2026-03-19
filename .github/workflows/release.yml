@@ -1,0 +1,88 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Run tests
+        run: uv run pytest
+
+      - name: Build package
+        run: uv build
+
+      - name: Create GitHub Release
+        run: >
+          gh release create "${{ github.ref_name }}"
+          --title "${{ github.ref_name }}"
+          --generate-notes
+          dist/*
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Publish to PyPI
+        if: env.PYPI_API_TOKEN != ''
+        env:
+          PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+        run: uv publish --token "$PYPI_API_TOKEN"
+
+      - name: Update Homebrew formula
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ github.ref_name }}"
+          VERSION="${TAG#v}"
+          REPO="${{ github.repository }}"
+          URL="https://github.com/${REPO}/archive/refs/tags/${TAG}.tar.gz"
+          SHA=$(curl -sL "$URL" | shasum -a 256 | cut -d' ' -f1)
+
+          cat > Formula/mdlcalc.rb <<'EOF'
+          class Mdlcalc < Formula
+            desc "Calculate approximate memory requirements for LLM inference"
+            homepage "https://github.com/$REPO"
+            url "$URL"
+            sha256 "$SHA"
+            license "CC-BY-NC-SA-4.0"
+
+            depends_on "python@3.12"
+
+            resource "click" do
+              url "https://files.pythonhosted.org/packages/source/c/click/click-8.2.1.tar.gz"
+              sha256 "27c43a48497728893a428686e47744242c839c88a767c4e7a54a892f73a14b7e"
+            end
+
+            def install
+              virtualenv_create(libexec, "python3.12")
+              virtualenv_pip_install resources
+              system libexec/"bin/pip", "install", *std_pip_args(build_isolation: true), "."
+            end
+
+            test do
+              assert_match "Q4_K_M", shell_output("#{bin}/mdlcalc 7B")
+              assert_match "GB", shell_output("#{bin}/mdlcalc 1T Q8_0")
+            end
+          end
+          EOF
+          envsubst '$REPO $URL $SHA' < Formula/mdlcalc.rb > Formula/mdlcalc.rb.tmp
+          mv Formula/mdlcalc.rb.tmp Formula/mdlcalc.rb
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/mdlcalc.rb
+          git diff --cached --quiet || git commit -m "Update Homebrew formula for ${TAG}"
+          git push
